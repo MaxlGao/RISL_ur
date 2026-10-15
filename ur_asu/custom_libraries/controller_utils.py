@@ -88,7 +88,6 @@ class ControllerManager:
         to_stop = [c for c in stop_list if c in active_controllers]
 
         if not to_start and not to_stop:
-            self.node.get_logger().info(f"No controller switch needed.")
             return True
 
         if not self.switch_client.wait_for_service(timeout_sec=self._service_wait_timeout):

@@ -8,11 +8,12 @@ from action_msgs.msg import GoalStatus
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
-from geometry_msgs.msg import PoseStamped, PoseArray, Pose
+from geometry_msgs.msg import PoseStamped
 from scipy.spatial.transform import Rotation as R
 import numpy as np
+import argparse
 
-from ur_asu.custom_libraries.actionlibrariesmax import hover_over  # <-- your function here
+from ur_asu.custom_libraries.actionlibrariesmax import hover_over
 
 # GRIPPER_COMMANDS = {
 #     "traj3": "close",  # grip block
@@ -20,26 +21,29 @@ from ur_asu.custom_libraries.actionlibrariesmax import hover_over  # <-- your fu
 # }
 
 class JTCClient(Node):
-    def __init__(self):
-        super().__init__("trajectory_executor")
+    def __init__(self, **kwargs):
+        super().__init__("trajectory_executor", **kwargs)
         # Parameter Management
         self.declare_parameter("controller_name", "scaled_joint_trajectory_controller")
         self.declare_parameter("joints", [
             "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
             "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"])
-        self.declare_parameter("target_object_name", "allen_key")
+        
+        # OBJECT TO FOLLOW
+        # Options: jenga_###, allen_key, wrench
+        self.declare_parameter("target", "wrench")
 
         controller_name = self.get_parameter("controller_name").value + "/follow_joint_trajectory"
         self.joints = self.get_parameter("joints").value
-        self.target_object_name = self.get_parameter("target_object_name").value
-
+        self.target_object_name = self.get_parameter("target").value
+        print(f"Looking for object {self.target_object_name}")
 
         self._action_client = ActionClient(self, FollowJointTrajectory, controller_name)
         # self._gripper_pub = self.create_publisher(String, "/gripper_command", 10)
 
         self.subscription = self.create_subscription(
             PoseStamped,
-            f"/object_poses/object_{self.target_object_name}",  # Listening to a specific object
+            f"/object_poses/{self.target_object_name}",  # Listening to a specific object
             self.object_pose_callback,
             10)
 
@@ -150,6 +154,22 @@ class JTCClient(Node):
     def send_trajectory(self, target_pose):
         (x, y, z), (r, p, yw) = target_pose
         self.get_logger().info(f"Received pose for object {self.target_object_name}: <{x:.3f}, {y:.3f}, {z:.3f}> @ angle [{r:.1f}, {p:.1f}, {yw:.1f}]")
+        if self.target_object_name == "allen_key":
+            # Shift over 60 mm if it's the allen key 
+            # (allen key is long and goes out of frame easily)
+            print("It's the allen key, so shifting over...")
+            rot = R.from_euler('xyz', [r, p, yw], degrees=True).as_matrix()
+            obj_pos = np.array([x, y, z])
+            point_obj_frame = np.array([0.06, 0, 0])
+            point_base_frame = rot @ point_obj_frame + obj_pos
+            target_pose = (point_base_frame, (r, p, yw))
+
+        # Instead of hovering the gripper directly over the object, backtrack a bit to center it in frame. 
+        # Since hover_over for now keeps at a constant orientation, simply bump off 50mm from the y coordinate.
+        (x, y, z), (r, p, yw) = target_pose
+        y += 0.05
+        target_pose = ([x, y, z], (r, p, yw))
+
         self.trajectories = hover_over(target_pose, 0.30)
         self.goals = self.parse_trajectories()
         self.execute_next_trajectory()
@@ -193,11 +213,30 @@ class JTCClient(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = JTCClient()
+
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Run the JTCClient node with a specified target object.")
+    parser.add_argument('--target', type=str, default='allen_key', help='Name of the target object to follow')
+    parsed_args, unknown = parser.parse_known_args()
+    print(f"Recieved target: {parsed_args.target}")
+
+    # Set up parameter overrides
+    param_overrides = [
+        rclpy.parameter.Parameter(
+            "target",
+            rclpy.Parameter.Type.STRING,
+            parsed_args.target
+        )
+    ]
+
+    node = JTCClient(parameter_overrides=param_overrides)
+    # node.set_parameters(param_overrides)
+    
     try:
         rclpy.spin(node)
     except (RuntimeError, SystemExit):
         node.get_logger().info("Shutting down")
+    node.destroy_node()
     rclpy.shutdown()
 
 if __name__ == "__main__":

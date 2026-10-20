@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'ur_asu'
+package_name = 'risl_ur'
 
 
 setup(
@@ -21,8 +21,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'talker = ur_asu.testmove_ur5e:main',
-            'ik_solver = ur_asu.scripts.ik_solver:main'
+            'talker = risl_ur.testmove_ur5e:main',
+            'ik_solver = risl_ur.scripts.ik_solver:main'
         ],
     },
 )

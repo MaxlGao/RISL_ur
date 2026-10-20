@@ -18,8 +18,8 @@ sudo apt-get install ros-humble-ur
 ```
 ## 📂 Pakage Structure 
 
-```ur_asu/
-└── ur_asu/
+```risl_ur/
+└── risl_ur/
     ├── custom_libraries/
     │   └── inverse_kinematics.py
     ├── scripts/
@@ -58,7 +58,7 @@ To test the package:
 
 1. In a second terminal, **source Humble, overlay the local workspace** and navigate to the package directory:
   ```
-   cd <your_ros2_ws>/src/ur_asu/ur_asu/scripts
+   cd <your_ros2_ws>/src/risl_ur/risl_ur/scripts
 ```
 
 2. Run the test script:
@@ -78,15 +78,15 @@ To test the package:
 
 `testgripperhover_2.py`: Modern method of adaptively adjusting gripper width based on EE height above table.
 
-`testobjectfollow.py --target [target_name]`: EE follows user-defined object at set height above table. Connects to `max_camera_localizer`.
+`testobjectfollow.py --target [target_name]`: EE follows user-defined object at set height above table. Connects to `risl_camera_localizer`.
 
-`testobjectprepush.py`: EE sets up gripper for push, based on recommended pusher positions. Connects to `max_camera_localizer`.
+`testobjectprepush.py`: EE sets up gripper for push, based on recommended pusher positions. Connects to `risl_camera_localizer`.
 
 `testspinaround.py`: rotates the end-effector 360 degrees to verify that IK keeps all other joint angles the same.  
 
 
 ## Demonstration
 
-The following video represents a culmination of capabilities from this package and `max_camera_localizer`. Using the pusher recommendation system from that package, two contour points are published over ROS2 and read by a subscriber node. These two points, representing the desired location of the gripper fingertips, are converted to exact end-effector position and orientation. As the object moves over time, these points may change and necessitate a switch. A sequence of moves is then built such that the gripper retracts before switching position (as to not collide with the object), and automatically adjusts its raise/lower rate (as to keep the gripper from colliding with the table.) 
+The following video represents a culmination of capabilities from this package and `risl_camera_localizer`. Using the pusher recommendation system from that package, two contour points are published over ROS2 and read by a subscriber node. These two points, representing the desired location of the gripper fingertips, are converted to exact end-effector position and orientation. As the object moves over time, these points may change and necessitate a switch. A sequence of moves is then built such that the gripper retracts before switching position (as to not collide with the object), and automatically adjusts its raise/lower rate (as to keep the gripper from colliding with the table.) 
 
 ![Prepush demonstration](./media/trimmed20prepush.gif)

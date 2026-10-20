@@ -8,8 +8,7 @@ def canonicalize_euler(orientation, tol=1):
 
 def pose_text(pose):
     position, euler = pose
-    return f"""XYZ: {1000*position[0]:.1f}, {1000*position[1]:.1f}, {1000*position[2]:.1f} mm
-RPY: {euler[0]:.1f}, {euler[1]:.1f}, {euler[2]:.1f} deg"""
+    return f"XYZ: {1000*position[0]: 6.1f}, {1000*position[1]: 6.1f}, {1000*position[2]: 6.1f} mm; RPY: {euler[0]: 6.1f}, {euler[1]: 6.1f}, {euler[2]: 6.1f} deg"
 
 def pushers_text(pusher_1_pos, pusher_2_pos):
     return f"""

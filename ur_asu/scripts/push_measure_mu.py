@@ -21,13 +21,12 @@ class OverController(Node):
         self.linear = True                 # Linear or rotational testing
         self.target_name = "jenga_6"        # Options: jenga_6, wrench
 
-
+        #region setup
         self.joint_names = [
             "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
             "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"
         ]
 
-        #region setup
         # Controller Names
         self.position_controller = 'scaled_joint_trajectory_controller'
         self.velocity_controller = 'forward_velocity_controller'
@@ -85,10 +84,14 @@ class OverController(Node):
 
         if self.linear:
             adj2 = "linear"
+            self.push_commands = [[0.0, -Fy_cmd, 0.0, 0.0, 0.0, 0.0] for Fy_cmd in self.force_levels]
+            self.selection_vec = [False, True, False, False, False, False]
         else:
             adj2 = "rotational"
             # bump y position by a bit, since we're not pushing that way
             self.home_position[1] += -0.100
+            self.push_commands = [[0.0, 0.0, 0.0, 0.0, 0.0, Tz_cmd] for Tz_cmd in self.torque_levels]
+            self.selection_vec = [False, False, False, False, False, True]
 
         #endregion
 
@@ -123,29 +126,24 @@ class OverController(Node):
         if self.latest_target_pose is not None and self.current_force is not None:
             t = time.time() - self.start_time
             x, y, _ = self.latest_target_pose[0]
+            _, _, Rz = self.latest_target_pose[1]
             ee_x, ee_y, _ = self.motion.ee_position
-            self.log_data.append([t, self.current_force, x, y, ee_x, ee_y])
+            _, _, ee_Rz = self.motion.ee_euler
+            self.log_data.append([t, self.current_force, x, y, Rz, ee_x, ee_y, ee_Rz])
 
     def run_friction_experiment(self):
         self.get_logger().info("Starting kinetic friction experiment")
         with open(self.logfile, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["time","Fy","x","y","ee_x","ee_y"])
-            # if self.linear:
-            #     levels = self.force_levels
-            # else:
-            #     levels = self.torque_levels
+            writer.writerow(["time","Force","x","y","Rz","ee_x","ee_y","ee_Rz"])
 
-            for Fy_cmd in self.force_levels:
-                self.get_logger().info(f"→ Push with {Fy_cmd:.1f} N")
+            for push_cmd in self.push_commands:
+                self.get_logger().info(f"→ Push with {push_cmd}")
                 self.start_time = time.time()
-                self.current_force = Fy_cmd
+                self.current_force = max([abs(f) for f in push_cmd])
                 self.log_data = []
 
-                push_vec = [0.0, -Fy_cmd, 0.0, 0.0, 0.0, 0.0]
-                print(push_vec)
-                # torq_vec = [0.0, 0.0, 0.0, 0.0, 0.0, Tz_cmd]
-                push_act = force(push_vec, self.push_duration, selection_vector=[False, True, False, False, False, False])
+                push_act = force(push_cmd, self.push_duration, selection_vector=self.selection_vec)
                 self._execute_single_act(push_act)
 
                 while time.time() - self.start_time < self.push_duration:

@@ -5,17 +5,12 @@ import numpy as np
 
 class PusherHandler:
     """Container for all *pusher* related commands, including recommended and actual pusher locations"""
-    def __init__(self, node):
+    def __init__(self, node, recommended_topics):
         self.node = node
         self.pusher_pub_l = self.node.create_publisher(PointStamped, "/gripper_pusher_left", 10)
         self.pusher_pub_r = self.node.create_publisher(PointStamped, "/gripper_pusher_right", 10)
 
-        self.recommended_topics = [
-            ('pusher_1_position', '/recommended_pusher_1/position', PointStamped),
-            ('pusher_2_position', '/recommended_pusher_2/position', PointStamped),
-            ('pusher_1_normal',   '/recommended_pusher_1/normal',   Vector3Stamped),
-            ('pusher_2_normal',   '/recommended_pusher_2/normal',   Vector3Stamped)
-        ]
+        self.recommended_topics = recommended_topics
         self.recommended_subscriptions = {}
         for name, topic, msg_type in self.recommended_topics:
             callback_with_name = partial(self.push_recommend_callback, name=name)
@@ -44,15 +39,14 @@ class PusherHandler:
             msg.point.x, msg.point.y, msg.point.z = pos
             pub.publish(msg)
 
-    def extract_pusher_locations(self):
-        # If any of recommended pushers are none, skip this process
-        if any([self.recommend_data["pusher_1"]["position"] is None,
-                self.recommend_data["pusher_2"]["position"] is None,
-                self.recommend_data["pusher_1"]["normal"] is None,
-                self.recommend_data["pusher_2"]["normal"] is None]):
-            print("Improper data detected. Skipping...")
-            return
+    def pusher_recommendations_exist(self):
+        not_exist = any([self.recommend_data["pusher_1"]["position"] is None,
+                         self.recommend_data["pusher_2"]["position"] is None,
+                         self.recommend_data["pusher_1"]["normal"] is None,
+                         self.recommend_data["pusher_2"]["normal"] is None])
+        return not not_exist
 
+    def extract_pusher_locations(self):
         # Find the EE Pose from pushers
         # normals are normal out. We want that to be anti-camera, which is +90deg
         # normals are also unit vector. 

@@ -39,27 +39,15 @@ class MotionExecutor:
         print(f"NOTICE: AUTO-GRIPPER SET TO {self.auto_gripper}.")
 
         # Action IO
-        self.traj_client = ActionClient(
-            node, FollowJointTrajectory, f'/{self.position_controller}/follow_joint_trajectory'
-            )
-        self.joint_state_sub = self.node.create_subscription(
-            JointState, '/joint_states', self.joint_state_callback, 10
-            )
-        self.ee_pose_sub = self.node.create_subscription(
-            PoseStamped, '/tcp_pose_broadcaster/pose', self.ee_pose_callback, 10
-            )
-        self.joint_vel_pub = self.node.create_publisher(
-            Float64MultiArray, f'/{self.velocity_controller}/commands', 10
-            )
-        self.commanded_twist_pub = self.node.create_publisher(
-            TwistStamped, '/robot/commanded_twist', 10
-            )
-        self.start_force_client = self.node.create_client(
-            SetForceMode, '/force_mode_controller/start_force_mode'
-            )
-        self.stop_force_client = self.node.create_client(
-            Trigger, '/force_mode_controller/stop_force_mode'
-            )
+        self.traj_client = ActionClient(node, FollowJointTrajectory, f'/{self.position_controller}/follow_joint_trajectory')
+        self.joint_state_sub = self.node.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
+        self.ee_pose_sub = self.node.create_subscription(PoseStamped, '/tcp_pose_broadcaster/pose', self.ee_pose_callback, 10)
+        
+        self.joint_vel_pub = self.node.create_publisher(Float64MultiArray, f'/{self.velocity_controller}/commands', 10)
+        self.commanded_twist_pub = self.node.create_publisher(TwistStamped, '/robot/commanded_twist', 10)
+        
+        self.start_force_client = self.node.create_client(SetForceMode, '/force_mode_controller/start_force_mode')
+        self.stop_force_client = self.node.create_client(Trigger, '/force_mode_controller/stop_force_mode')
 
         self.controller_manager.prestart_controllers()
 
@@ -67,6 +55,11 @@ class MotionExecutor:
         self.ee_position = []
         self.ee_quat = []
         self.ee_euler = []
+
+    def set_auto_gripper(self, enabled: bool):
+        """Enable or disable automatic gripper resizing based on EE pose."""
+        self.auto_gripper = enabled
+        self.node.get_logger().info(f"Auto-gripper set to {enabled}")
 
     def joint_state_callback(self, msg: JointState):
         joint_map = {name: pos for name, pos in zip(msg.name, msg.position)}
@@ -82,9 +75,15 @@ class MotionExecutor:
         self.ee_euler = canonicalize_euler(R.from_quat(self.ee_quat).as_euler('xyz', degrees=True))
         if self.auto_gripper:
             # If you wish to avoid gripper contact with the table
-            self.gripper.update(self.ee_position)
+            self.gripper.update(self.ee_position, self.ee_euler)
+        else:
+            # otherwise feed gripper module with ee data
+            self.gripper.last_ee_position = self.ee_position
+            self.gripper.last_ee_euler = self.ee_euler
         if self.pusher is not None:
             self.pusher.update(self.ee_position, self.ee_euler)
+
+    #region Position Control
 
     def send_joint_angles(self, joint_angles, seconds=3.0):
         """Send a trajectory goal directly using specified joint angles."""
@@ -122,8 +121,18 @@ class MotionExecutor:
         ]
 
         self.traj_client.wait_for_server()
-        self.node.get_logger().info(f"Sending {description}: {joint_positions}")
-        future = self.traj_client.send_goal_async(goal)
+        joint_printout = ", ".join([f"{j:5.2}" for j in joint_positions])
+        self.node.get_logger().info(f"Sending {description}: [{joint_printout}]")
+        start_time = time.time()
+        def feedback_callback(feedback_msg):
+            current_time = time.time()
+            feedback = feedback_msg.feedback
+            if hasattr(feedback, 'desired') and hasattr(feedback.desired, 'time_from_start'):
+                # or some such
+                elapsed = current_time - start_time
+                # elapsed = feedback.desired.time_from_start.sec + feedback.desired.time_from_start.nanosec / 1e9
+                print(f"{description}: {elapsed:.1f} / {seconds:.1f}s complete", end='\r')
+        future = self.traj_client.send_goal_async(goal, feedback_callback=feedback_callback)
         rclpy.spin_until_future_complete(self.node, future)
 
         # Goal Response
@@ -134,10 +143,36 @@ class MotionExecutor:
         result_future = goal_handle.get_result_async()
 
         rclpy.spin_until_future_complete(self.node, result_future)
-        self.node.get_logger().info(f"{description} completed.")
+        self.node.get_logger().info(f"{description} completed. ({seconds:.1f}s)")
         return True
 
+    #endregion
+    
+    #region Velocity Control
+    def send_cartesian_velocity_step(self, v_cartesian: np.ndarray):
+        """No time control, no stopping. Good for live incremental changes to twist."""
+        self.controller_manager.switch_to_controller(
+            [self.velocity_controller], 
+            [self.position_controller, self.force_controller, self.passthrough_controller]
+            )
+        # vel_printout = ", ".join([f"{j: 9.6f}" for j in v_cartesian.tolist()])
+        
+        # self.node.get_logger().info(f"Starting velocity increment: [{vel_printout}]")
+        if not rclpy.ok():
+            return
+        if self.joint_positions is None:
+            self.node.get_logger().error("Joint state unavailable!")
+            return
+
+        J = compute_jacobian(self.joint_positions)
+        q_dot = np.linalg.pinv(J) @ v_cartesian
+        msg = Float64MultiArray()
+        msg.data = q_dot.tolist()
+        self.joint_vel_pub.publish(msg)
+        self.report_velocity_command(v_cartesian[0:3], v_cartesian[3:6])
+
     def send_cartesian_velocity(self, v_cartesian: np.ndarray, duration):
+        """Velocity with a duration and live counter"""
         self.controller_manager.switch_to_controller(
             [self.velocity_controller], 
             [self.position_controller, self.force_controller, self.passthrough_controller]
@@ -157,12 +192,9 @@ class MotionExecutor:
             if self.joint_positions is None:
                 self.node.get_logger().warn("Waiting for joint state...")
                 continue
-            try:
-                J = compute_jacobian(self.joint_positions)
-                q_dot = np.linalg.pinv(J) @ v_cartesian
-            except Exception as e:
-                self.node.get_logger().error(f"Jacobian computation failed: {e}")
-                continue
+
+            J = compute_jacobian(self.joint_positions)
+            q_dot = np.linalg.pinv(J) @ v_cartesian
             msg = Float64MultiArray()
             msg.data = q_dot.tolist()
             self.joint_vel_pub.publish(msg)
@@ -187,15 +219,12 @@ class MotionExecutor:
         for v_cartesian in v_traj:
             if not rclpy.ok():
                 break
-            try:
-                J = compute_jacobian(self.joint_positions)
-                q_dot = np.linalg.pinv(J) @ v_cartesian
-                msg = Float64MultiArray()
-                msg.data = q_dot.tolist()
-                self.joint_vel_pub.publish(msg)
-                self.report_velocity_command(v_cartesian[0:3], v_cartesian[3:6])
-            except Exception as e:
-                self.node.get_logger().error(f"Jacobian computation failed: {e}")
+            J = compute_jacobian(self.joint_positions)
+            q_dot = np.linalg.pinv(J) @ v_cartesian
+            msg = Float64MultiArray()
+            msg.data = q_dot.tolist()
+            self.joint_vel_pub.publish(msg)
+            self.report_velocity_command(v_cartesian[0:3], v_cartesian[3:6])
             time.sleep(dt)
         
         self.stop_cartesian_velocity()
@@ -207,6 +236,9 @@ class MotionExecutor:
         twist_msg.twist.linear.x, twist_msg.twist.linear.y, twist_msg.twist.linear.z = lin
         twist_msg.twist.angular.x, twist_msg.twist.angular.y, twist_msg.twist.angular.z = ang
         self.commanded_twist_pub.publish(twist_msg)
+
+    #endregion
+    #region Force Control
 
     def send_cartesian_force(self, wrench: list, duration, 
                         selection_vector = [True]*6,
@@ -320,7 +352,6 @@ class MotionExecutor:
                 rclpy.spin_once(self.node, timeout_sec=0.005)
                 time.sleep(0.01)
             self.stop_force_mode()
-            self.node.get_logger().info("Force mode stopped (async).")
 
         # Run in background
         threading.Thread(target=_apply_force, daemon=True).start()
@@ -381,3 +412,5 @@ class MotionExecutor:
         self.stop_force_mode()
         self.node.get_logger().info("Completed continuous force trajectory.")
         return True
+    
+    #endregion

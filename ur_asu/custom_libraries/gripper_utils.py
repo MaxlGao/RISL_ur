@@ -1,8 +1,10 @@
 import numpy as np
-from std_msgs.msg import String
-from ur_asu.custom_libraries.gripperlibraries import height_to_gripper_width
+import time
+from rclpy.node import Node
+from std_msgs.msg import String, Float64
+from geometry_msgs.msg import PolygonStamped, Point32
 from ur_asu.custom_libraries.generallibraries import pose_text
-from ur_asu.custom_libraries.actionlibrariesmax import move
+from ur_asu.custom_libraries.actionlibrariesmax import move, gripper_width
 
 GRIPPER_TABLE = { # Known, measured values. Gripper width in 0.1mm.
        0: 0.153,
@@ -13,31 +15,101 @@ GRIPPER_TABLE = { # Known, measured values. Gripper width in 0.1mm.
     1000: 0.114,
 }
 
-# Measured width of each gripper finger, normal to span
-GRIPPER_FINGER_OFFSET = 0.0058 # m
+# Measured distance from gripper finger center to tip, normal to span
+# AKA gripper fingers are twice as long as this distance. 
+GRIPPER_FINGER_OFFSET = 0.010 # m
 
 class GripperHandler:
     """Contains a live gripper width adjuster that widens the gripper as the ee gets close to the table. 
     A closed gripper will protrude further, causing collision."""
-    def __init__(self, node, vertical_offset = 0.01):
+    def __init__(self, node: Node, vertical_offset = 0.01):
         self.node = node
         self.gripper_pub = self.node.create_publisher(String, "/gripper_command", 10)
+        self.tip_pub = self.node.create_publisher(PolygonStamped, "/gripper/tip_points", 10)
+        # self.gripper_query_sub = self.node.create_subscription(Float64, 'gripper_queried_width', self.query_callback, 10)
+        self.previous_gripper_cmd = 0
+        # self.queried_width_mm = 0.0
+        self.action_tolerance_mm = 0.5 # Only move gripper if queried width is more than this amount different
+        # self.timer = self.node.create_timer(0.1, self.get_gripper)
+        self.vertical_offset = vertical_offset # Virtual table level in mm
+        self.last_ee_position = None
+        self.last_ee_euler = None
+        self.tip_publish_timer = self.node.create_timer(0.05, self.publish_tip_points_from_last_ee_position)
+        # offset = 0.000 means gripper tips always on table (dangerous)
         print("Created gripper")
 
-        self.vertical_offset = vertical_offset # Virtual table level in mm
-        # offset = 0.000 means gripper tips always on table (dangerous)
-
-    def update(self, ee_position):
+    def update(self, ee_position, ee_euler=None):
         # Set the gripper width to the planned ee position
         # Increasing the virtual floor reduces the interpreted height.
         interpreted_height = ee_position[2] - self.vertical_offset
-        width = height_to_gripper_width(interpreted_height)
-        self.publish(str(width))
+        width = self.height_to_gripper_width(interpreted_height)
+
+        # Only move gripper if different from last command.
+        if abs(self.previous_gripper_cmd - width) > 10*self.action_tolerance_mm:
+            # print(f"\nCommanded width {self.previous_gripper_cmd} is not close to actual width {width}")
+            # print(f"interpreted height is {interpreted_height}")
+            self.publish(str(width))
+            self.previous_gripper_cmd = width
+
+        self.last_ee_position = ee_position
+        self.last_ee_euler = ee_euler
+        self.publish_tip_points(ee_position, ee_euler)
 
     def publish(self, cmd: str):
         msg = String()
         msg.data = cmd
         self.gripper_pub.publish(msg)
+
+    def publish_tip_points_from_last_ee_position(self):
+        if self.last_ee_position is None:
+            return
+        self.publish_tip_points(self.last_ee_position, self.last_ee_euler)
+
+    def publish_tip_points(self, ee_position, ee_euler):
+        """Publish the two gripper tip points (finger endpoints) as a PolygonStamped.
+
+        This can be used for visualization / localization to see where the controller
+        thinks the gripper finger tips are located.
+
+        ee_position: [x, y, z]
+        ee_euler:   [roll, pitch, yaw] (degrees) (unused if None)
+        """
+        # Use only the XY pose and yaw for finger direction; assume 0 Z for contact plane
+        # (matching the table plane).
+        # If ee_euler is not provided, assume yaw=0.
+        yaw = 0.0
+        if ee_euler is not None and len(ee_euler) >= 3:
+            yaw = ee_euler[2]
+
+        p1, p2 = self.EE_pose_to_pushers_2D([ee_position, [0, 0, yaw]], self.previous_gripper_cmd)
+        # That gives z=0, so separately we subtract gripper_width_to_height from ee z to get the correct z height for the tips.
+        tip_z = ee_position[2] - self.vertical_offset - self.gripper_width_to_height(self.previous_gripper_cmd)
+        p1[2] = tip_z
+        p2[2] = tip_z
+        yaw_r = np.deg2rad(yaw)
+        edge_dx = GRIPPER_FINGER_OFFSET * np.cos(yaw_r+np.pi/2) # Rotate 90 degrees to get the direction perpendicular to the gripper span
+        edge_dy = GRIPPER_FINGER_OFFSET * np.sin(yaw_r+np.pi/2)
+        p1_adjusted = [p1[0] - edge_dx, p1[1] - edge_dy, p1[2]]
+        p2_adjusted = [p2[0] - edge_dx, p2[1] - edge_dy, p2[2]]
+        poly = PolygonStamped()
+        poly.header.stamp = self.node.get_clock().now().to_msg()
+        poly.header.frame_id = "base"
+        poly.polygon.points = [
+            Point32(x=float(p1_adjusted[0]), y=float(p1_adjusted[1]), z=float(p1_adjusted[2])),
+            Point32(x=float(p2_adjusted[0]), y=float(p2_adjusted[1]), z=float(p2_adjusted[2])),
+            Point32(x=float(p1[0]), y=float(p1[1]), z=float(p1[2])),
+            Point32(x=float(p2[0]), y=float(p2[1]), z=float(p2[2])),
+        ]
+        self.tip_pub.publish(poly)
+
+    # def query_callback(self, msg: Float64):
+    #     self.queried_width_mm = msg.data
+    #     print(f"Query Complete! Verdict: {msg.data}")
+
+    # def get_gripper(self):
+    #     msg = String()
+    #     msg.data = str("query")
+    #     self.gripper_pub.publish(msg)
 
     def gripper_width_to_height(self, gripper_width):
         # Clamp input to valid range
@@ -76,7 +148,7 @@ class GripperHandler:
                 t = (height - low_val) / (high_val - low_val)
                 return int(high_key + t * (low_key - high_key))
 
-    def EE_pose_to_pushers_2D(self, EE_pose):
+    def EE_pose_to_pushers_2D(self, EE_pose, gripper_width_cmd=None):
         """
         Returns the gripper positions given the current EE pose, assuming the gripper width is set according to height.
         Currently doesn't intelligently distinguish which gripper's which.
@@ -88,7 +160,9 @@ class GripperHandler:
         height -= self.vertical_offset
         yaw = orientation[2]
         yaw_r = np.deg2rad(yaw)
-        gripper_width = height_to_gripper_width(height) * 0.0001 # Conversion to meters
+        if gripper_width_cmd is None:
+            gripper_width_cmd = self.height_to_gripper_width(height)
+        gripper_width = gripper_width_cmd * 0.0001 # Conversion to meters
         half_width = gripper_width / 2
 
         dx = half_width * np.cos(yaw_r)
@@ -120,7 +194,6 @@ class GripperHandler:
             # If gripper width is more than 10 mm, probably okay to measure angle.
             yaw = np.atan2(pos1_np[1]-pos2_np[1], pos1_np[0]-pos2_np[0])
             yaw = np.rad2deg(yaw)
-            print(f"YAW IS {yaw}")
         orientation = [0, 180, yaw]
         return position, orientation
 
@@ -164,7 +237,7 @@ class GripperHandler:
         height -= self.vertical_offset
         yaw_d = orientation[2]
         yaw_r = np.deg2rad(yaw_d)
-        gripper_width = height_to_gripper_width(height) * 0.0001 # Conversion to meters
+        gripper_width = self.height_to_gripper_width(height) * 0.0001 # Conversion to meters
         half_width = gripper_width / 2
 
         dx = half_width * np.cos(yaw_r)
@@ -179,8 +252,7 @@ class GripperHandler:
         Improved with retract, raise, move, lower, and advance actions. 
         Fortunately we only need the EE pose at the first instant. 
         """
-        print(f"""We're currently at:
-    {pose_text(EE_pose_now)}""")
+        print(f"We're currently at {pose_text(EE_pose_now)}")
         moves = []
         # Part 1: Retreat. Find the yaw, and set a waypoint 1 cm backward
         retreat_distance = 0.03
@@ -194,35 +266,41 @@ class GripperHandler:
         retreat_y = initial_pos[1] + retreat_dy
         retreat_position = [retreat_x, retreat_y, initial_pos[2]]
         retreat_pose = [retreat_position, initial_ori]
-        moves.append(move(retreat_position, initial_ori, duration))
-        print(f"""RETREAT:
-    {pose_text(retreat_pose)}""")
+
+        # Skip if EE starting position is already high
+        if not EE_pose_now[0][2] > GRIPPER_TABLE[0] + 0.01:
+            moves.append(move(retreat_position, initial_ori, duration))
+            print(f"{'RETREAT POSE:':19}{pose_text(retreat_pose)}")
 
         # Part 2: Raise. Move to a height of 300mm
         raise_position = retreat_position
         raise_position[2] = 0.3 + self.vertical_offset
-        print(raise_position)
-        initial_width = height_to_gripper_width(initial_pos[2] - self.vertical_offset) * 0.0001
+        initial_width = self.height_to_gripper_width(initial_pos[2] - self.vertical_offset) * 0.0001
         if initial_width > 0.04:
             intermed_height = self.gripper_width_to_height(400) + self.vertical_offset
             intermed_position = raise_position.copy()
             intermed_position[2] = intermed_height
             intermed_pose = [intermed_position, initial_ori]
-            print(f"""INTERMED 1:
-    {pose_text(intermed_pose)}""")
-            moves.extend([move(intermed_position, initial_ori, duration),
-                        move(raise_position, initial_ori, 2*duration)])
+            print(f"{'INTERMED 1 POSE:':19}{pose_text(intermed_pose)}")
+            
+            # Skip if EE starting position is already high
+            if not EE_pose_now[0][2] > GRIPPER_TABLE[0] + 0.01:
+                moves.extend([move(intermed_position, initial_ori, duration),
+                            move(raise_position, initial_ori, 2*duration)])
         else:
-            moves.append(move(raise_position, initial_ori, 2*duration))
+            if not EE_pose_now[0][2] > GRIPPER_TABLE[0] + 0.01:
+                moves.append(move(raise_position, initial_ori, 2*duration))
 
         raise_pose = [raise_position, initial_ori]
-        print(f"""RAISE:
-    {pose_text(raise_pose)}""")
+        # Skip if EE starting position is already high
+        if not EE_pose_now[0][2] > GRIPPER_TABLE[0] + 0.01:
+            print(f"{'RAISE POSE:':19}{pose_text(raise_pose)}")
 
 
-        # Part 5: Advance. Move above a final position. 
+        # Part 6: Advance. Move above a final position. 
         # We calculate this first, then back calculate the other steps.
         end_pos, end_ori = self.pointspan_to_EE_pose_2D(pusher_1_target, span_target, yaw_target)
+
         # For the end position we must consider the gripper width. 
         # So, we repeat some of Part 1's retreat. 
         advance_angle = end_ori[2] + 90
@@ -242,12 +320,11 @@ class GripperHandler:
         advance_position = [advance_x, advance_y, end_pos[2]]
         end_moves.append(move(advance_position, end_ori, duration))
         
-        # Part 4: Lower. Again, reverse Part 2.
+        # Part 5: Lower. Again, reverse Part 2.
         lower_position = advance_position
         lower_position[2] = 0.3 + self.vertical_offset
-        print(lower_position)
 
-        end_width = height_to_gripper_width(end_pos[2] - self.vertical_offset) * 0.0001
+        end_width = self.height_to_gripper_width(end_pos[2] - self.vertical_offset) * 0.0001
         if end_width > 0.04:
             intermed_height = self.gripper_width_to_height(400) + self.vertical_offset
             intermed_position = lower_position.copy()
@@ -257,15 +334,16 @@ class GripperHandler:
         else:
             end_moves.append(move(lower_position, end_ori, 2*duration))
         lower_pose = [lower_position, end_ori]
-        print(f"""SLIDE:
-    {pose_text(lower_pose)}""")
-        print("INTERMED 2: (Assumed)")
+        print(f"{'SLIDE:':19}{pose_text(lower_pose)}")
         advance_pose = [advance_position, end_ori]
-        print(f"""LOWER:
-    {pose_text(advance_pose)}""")
+        print(f"{'LOWER POSE:':19}{pose_text(advance_pose)}")
         end_pose = [end_pos, end_ori]
-        print(f"""END:
-    {pose_text(end_pose)}""")
+        print(f"{'END POSE:':19}{pose_text(end_pose)}")
+
+        # Part 4: Gripper. Size the gripper for the end height. We do this before the EE begins lowering, so that the gripper is already at the correct width when it gets close to the table. This reduces the risk of collision with the table.
+        gripper_width_planned = self.height_to_gripper_width(end_pos[2] - self.vertical_offset)
+        end_moves.append(gripper_width(gripper_width_planned))
+        # self.set_width_for_height(end_pos[2])
 
         # Part 3: Translate. Simply join the two lists together
         moves.extend(reversed(end_moves))

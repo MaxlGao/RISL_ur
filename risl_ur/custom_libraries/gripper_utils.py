@@ -4,7 +4,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, Float64
 from geometry_msgs.msg import PolygonStamped, Point32
 from risl_ur.custom_libraries.generallibraries import pose_text
-from risl_ur.custom_libraries.actionlibrariesmax import move, gripper_width
+from risl_ur.custom_libraries.actionlibraries import move, gripper_width
 
 GRIPPER_TABLE = { # Known, measured values. Gripper width in 0.1mm.
        0: 0.153,

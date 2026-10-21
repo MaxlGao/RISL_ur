@@ -9,7 +9,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
 
-from risl_ur.custom_libraries.actionlibrariesmax import spin_around  # <-- your function here
+from risl_ur.custom_libraries.actionlibraries import spin_around  # <-- your function here
 
 # GRIPPER_COMMANDS = {
 #     "traj3": "close",  # grip block

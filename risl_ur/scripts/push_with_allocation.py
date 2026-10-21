@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation as R
 from risl_ur.custom_libraries.motion_utils import MotionExecutor
 from risl_ur.custom_libraries.pusher_utils import PusherHandler
 from risl_ur.custom_libraries.gripper_utils import GripperHandler, GRIPPER_TABLE
-from risl_ur.custom_libraries.actionlibrariesmax import move, velocity, force, append_new_act, gripper_width
+from risl_ur.custom_libraries.actionlibraries import move, velocity, force, append_new_act, gripper_width
 
 class OverController(Node):
     def __init__(self):

@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation as R
 from risl_ur.custom_libraries.motion_utils import MotionExecutor
 from risl_ur.custom_libraries.pusher_utils import PusherHandler
 from risl_ur.custom_libraries.gripper_utils import GripperHandler, GRIPPER_TABLE
-from risl_ur.custom_libraries.actionlibrariesmax import move, velocity, force, append_new_act
+from risl_ur.custom_libraries.actionlibraries import move, velocity, force, append_new_act
 
 def make_circle_velocity_traj(radius=0.08, total_time=10.0, steps=200):
     omega = 2 * np.pi / total_time

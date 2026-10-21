@@ -4,7 +4,7 @@
   <name>risl_ur</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="kpatnaik@todo.todo">kpatnaik</maintainer>
+  <maintainer email="mgao18@todo.todo">mgao18</maintainer>
   <license>Apache-2.0</license>
 
   <test_depend>ament_copyright</test_depend>

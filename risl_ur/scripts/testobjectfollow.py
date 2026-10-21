@@ -13,7 +13,7 @@ from scipy.spatial.transform import Rotation as R
 import numpy as np
 import argparse
 
-from risl_ur.custom_libraries.actionlibrariesmax import hover_over
+from risl_ur.custom_libraries.actionlibraries import hover_over
 
 # GRIPPER_COMMANDS = {
 #     "traj3": "close",  # grip block

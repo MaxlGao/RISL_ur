@@ -1,8 +1,4 @@
-from builtin_interfaces.msg import Duration
 from risl_ur.custom_libraries.ik_solver import compute_ik
-import numpy as np
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from std_msgs.msg import Float64MultiArray
 
 HOME_POSE = [0.065, -0.385, 0.481, 0, 180, 0]  # XYZRPY
 
@@ -14,7 +10,7 @@ def move(position, rpy, seconds):
         raise ValueError(f"Expected 3D position, got {position}")
     joint_angles = compute_ik(position, rpy)
     if joint_angles is None:
-        return []
+        raise ValueError(f"IK failed for position {position} and orientation {rpy}")
     return {
         "type": "position",
         "joint_angles": [float(x) for x in joint_angles],
@@ -24,7 +20,7 @@ def move(position, rpy, seconds):
 def gripper_width_from_height(position, gripper):
     adjusted_height = position[2] - gripper.vertical_offset
     width = gripper.height_to_gripper_width(adjusted_height)
-    return gripper_width(str(width))
+    return gripper_width(width)
 
 def gripper_width(cmd):
     """cmd is a string, and may be 'open', 'close', or a numerical string from 0 to 1100"""
@@ -115,7 +111,7 @@ def hover_over(target_pose, height):
 
 def append_new_act(traj_dict, trajectory):
     # Extract the numeric suffixes from keys and find the max
-    existing_keys = [key for key in traj_dict.keys() if key.startswith("act")]
+    existing_keys = [key for key in traj_dict if key.startswith("act") and key[3:].isdigit()]
     if existing_keys:
         max_index = max(int(key[3:]) for key in existing_keys if key[3:].isdigit())
     else:

@@ -9,7 +9,8 @@ from geometry_msgs.msg import PoseStamped
 
 from risl_ur.custom_libraries.motion_utils import MotionExecutor
 from risl_ur.custom_libraries.pusher_utils import PusherHandler
-from risl_ur.custom_libraries.gripper_utils import GripperHandler, GRIPPER_TABLE
+from risl_ur.custom_libraries.gripper_utils import GripperHandler
+from risl_ur.custom_libraries.gripper_geometry import GRIPPER_TABLE
 from risl_ur.custom_libraries.actionlibraries import move, append_new_act
 
 class OverController(Node):
@@ -76,7 +77,7 @@ class OverController(Node):
     #                              msg.pose.orientation.z, msg.pose.orientation.w])
     #     self.ee_euler = canonicalize_euler(R.from_quat(self.ee_quat).as_euler('xyz', degrees=True))
     #     self.gripper.update(self.ee_position)
-    #     self.pusher.update(self.ee_position, self.ee_euler)
+    #     self.pusher.update(self.ee_position, self.ee_euler, gripper=self.gripper)
 
     # def parse_acts(self):
     #     goals = {}

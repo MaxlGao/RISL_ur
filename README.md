@@ -90,3 +90,33 @@ To test the package:
 The following video represents a culmination of capabilities from this package and `risl_camera_localizer`. Using the pusher recommendation system from that package, two contour points are published over ROS2 and read by a subscriber node. These two points, representing the desired location of the gripper fingertips, are converted to exact end-effector position and orientation. As the object moves over time, these points may change and necessitate a switch. A sequence of moves is then built such that the gripper retracts before switching position (as to not collide with the object), and automatically adjusts its raise/lower rate (as to keep the gripper from colliding with the table.) 
 
 ![Prepush demonstration](./media/trimmed20prepush.gif)
+
+## Motion helper ownership and units
+
+`custom_libraries/gripper_geometry.py` owns the calibration table and all planar
+pose/pusher/pointspan conversions. `GripperGeometry` can be used without ROS;
+`GripperHandler` inherits the same methods, including `EE_pose_to_pushers_2D`.
+Positions, reach, spans and vertical offsets are in meters, Euler angles are in
+degrees, and width commands are in tenths of a millimeter. Pusher 1 lies along
+positive yaw from the tool center. Planar conversions ignore Z when measuring
+pusher span and return projected pusher positions at Z=0.
+
+`GripperHandler` owns command publication and the last commanded width.
+`PusherHandler.update(position, euler, gripper=gripper)` uses that same geometry
+and command state, including when automatic resizing is disabled. These published
+positions are estimates from commands, not measured finger positions. Default
+recommendation subscriptions use `/vision/recommended_pusher_{1,2}/{position,normal}`;
+pass an explicit topic list to override them, or `[]` to disable subscriptions.
+
+The measured reach table ends at 100 mm opening. Reach interpolation keeps that
+endpoint for larger openings, although the driver accepts commands up to 110 mm.
+Retreat/raise/lower planning lives in `GripperHandler.pointspan_to_acts_safe`;
+`actionlibraries` builds action dictionaries, `MotionExecutor` sends them through
+ROS controllers, and `ControllerManager` handles controller services.
+
+Run the offline motion regressions from the workspace root (no robot required):
+
+```bash
+source /opt/ros/humble/setup.bash
+PYTHONPATH="$PWD/src/risl_ur:$PYTHONPATH" python3 -m pytest -q src/risl_ur/test/test_motion_logic.py
+```

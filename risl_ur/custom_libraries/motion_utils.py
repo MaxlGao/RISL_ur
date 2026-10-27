@@ -13,6 +13,7 @@ from geometry_msgs.msg import TwistStamped, Wrench, Twist, PoseStamped
 from builtin_interfaces.msg import Duration
 from control_msgs.msg import JointTolerance
 
+from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
 from ur_msgs.srv import SetForceMode
 from std_srvs.srv import Trigger
@@ -49,12 +50,12 @@ class MotionExecutor:
         self.start_force_client = self.node.create_client(SetForceMode, '/force_mode_controller/start_force_mode')
         self.stop_force_client = self.node.create_client(Trigger, '/force_mode_controller/stop_force_mode')
 
-        self.controller_manager.prestart_controllers()
-
         self.joint_positions = None
         self.ee_position = []
         self.ee_quat = []
         self.ee_euler = []
+
+        self.controller_manager.prestart_controllers()
 
     def set_auto_gripper(self, enabled: bool):
         """Enable or disable automatic gripper resizing based on EE pose."""
@@ -81,7 +82,7 @@ class MotionExecutor:
             self.gripper.last_ee_position = self.ee_position
             self.gripper.last_ee_euler = self.ee_euler
         if self.pusher is not None:
-            self.pusher.update(self.ee_position, self.ee_euler)
+            self.pusher.update(self.ee_position, self.ee_euler, gripper=self.gripper)
 
     #region Position Control
 
@@ -100,16 +101,22 @@ class MotionExecutor:
                                            f"Cartesian goal: pos={position}, rpy={rpy_deg}")
 
     def _send_joint_trajectory(self, joint_positions, seconds=3.0, description="Joint goal"):
-        self.controller_manager.switch_to_controller(
+        if not self.controller_manager.switch_to_controller(
             [self.position_controller],
             [self.velocity_controller, self.force_controller, self.passthrough_controller]
-        )
+        ):
+            return False
 
         traj = JointTrajectory()
         traj.joint_names = self.joint_names
         point = JointTrajectoryPoint()
         point.positions = joint_positions
-        point.time_from_start = Duration(sec=int(seconds))
+        seconds = float(seconds)
+        if not np.isfinite(seconds) or seconds <= 0:
+            raise ValueError("Trajectory duration must be positive and finite")
+        total_ns = round(seconds * 1_000_000_000)
+        sec, nanosec = divmod(total_ns, 1_000_000_000)
+        point.time_from_start = Duration(sec=sec, nanosec=nanosec)
         traj.points.append(point)
 
         goal = FollowJointTrajectory.Goal()
@@ -137,12 +144,17 @@ class MotionExecutor:
 
         # Goal Response
         goal_handle = future.result()
-        if not goal_handle.accepted:
+        if goal_handle is None or not goal_handle.accepted:
             self.node.get_logger().error(f"{description} rejected by controller.")
             return False
         result_future = goal_handle.get_result_async()
 
         rclpy.spin_until_future_complete(self.node, result_future)
+        result = result_future.result()
+        if (result is None or result.status != GoalStatus.STATUS_SUCCEEDED
+                or result.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL):
+            self.node.get_logger().error(f"{description} failed: {result}")
+            return False
         self.node.get_logger().info(f"{description} completed. ({seconds:.1f}s)")
         return True
 
@@ -151,10 +163,11 @@ class MotionExecutor:
     #region Velocity Control
     def send_cartesian_velocity_step(self, v_cartesian: np.ndarray):
         """No time control, no stopping. Good for live incremental changes to twist."""
-        self.controller_manager.switch_to_controller(
+        if not self.controller_manager.switch_to_controller(
             [self.velocity_controller], 
             [self.position_controller, self.force_controller, self.passthrough_controller]
-            )
+        ):
+            return False
         # vel_printout = ", ".join([f"{j: 9.6f}" for j in v_cartesian.tolist()])
         
         # self.node.get_logger().info(f"Starting velocity increment: [{vel_printout}]")
@@ -173,10 +186,11 @@ class MotionExecutor:
 
     def send_cartesian_velocity(self, v_cartesian: np.ndarray, duration):
         """Velocity with a duration and live counter"""
-        self.controller_manager.switch_to_controller(
+        if not self.controller_manager.switch_to_controller(
             [self.velocity_controller], 
             [self.position_controller, self.force_controller, self.passthrough_controller]
-            )
+        ):
+            return False
         start_time = time.time()
         last_progress = start_time
         self.node.get_logger().info(f"Starting velocity phase: {v_cartesian} for {duration}s")
@@ -210,10 +224,11 @@ class MotionExecutor:
         self.report_velocity_command([0.0] * 3, [0.0] * 3)
 
     def send_cartesian_velocity_trajectory(self, v_traj: list[np.ndarray], dt: float):
-        self.controller_manager.switch_to_controller(
+        if not self.controller_manager.switch_to_controller(
             [self.velocity_controller],
             [self.position_controller, self.force_controller, self.passthrough_controller]
-        )
+        ):
+            return False
         self.node.get_logger().info(f"Starting continuous velocity trajectory with {len(v_traj)} steps")
         
         for v_cartesian in v_traj:
@@ -245,11 +260,13 @@ class MotionExecutor:
                         vel_limits = [0.25, 0.25, 0.25, 0.5, 0.5, 0.5], 
                         pos_limits = [0.25, 0.25, 0.25, 0.5, 0.5, 0.5], 
                         damping=0.025, gain=0.5):
-        self.send_cartesian_force_step(wrench, duration, selection_vector=selection_vector,
-                                        vel_limits=vel_limits, pos_limits=pos_limits, damping=damping,
-                                        gain=gain)
-        self.stop_force_mode()
-        return True
+        try:
+            return self.send_cartesian_force_step(
+                wrench, duration, selection_vector=selection_vector,
+                vel_limits=vel_limits, pos_limits=pos_limits,
+                damping=damping, gain=gain)
+        finally:
+            self.stop_force_mode()
 
     def send_cartesian_force_step(self, wrench: list, duration, 
                         selection_vector = [True]*6,
@@ -257,8 +274,9 @@ class MotionExecutor:
                         pos_limits = [0.25, 0.25, 0.25, 0.5, 0.5, 0.5], 
                         damping=0.025, gain=0.5):
         """Activate UR Force Mode through service."""
-        self.controller_manager.switch_to_controller([self.force_controller, self.passthrough_controller],
-                                  [self.position_controller, self.velocity_controller])
+        if not self.controller_manager.switch_to_controller([self.force_controller, self.passthrough_controller],
+                                  [self.position_controller, self.velocity_controller]):
+            return False
 
         if not self.start_force_client.wait_for_service(timeout_sec=2.0):
             self.node.get_logger().error("Force mode start service not available.")
@@ -307,54 +325,14 @@ class MotionExecutor:
                                 pos_limits=[0.25]*3 + [0.5]*3,
                                 damping=0.025, gain=0.5):
         """Send a constant Cartesian force asynchronously, without blocking."""
-        def _apply_force():
-            self.controller_manager.switch_to_controller(
-                [self.force_controller, self.passthrough_controller],
-                [self.position_controller, self.velocity_controller]
-            )
-
-            if not self.start_force_client.wait_for_service(timeout_sec=2.0):
-                self.node.get_logger().error("Force mode start service not available.")
-                return False
-
-            req = SetForceMode.Request()
-            task_frame = PoseStamped()
-            task_frame.header.frame_id = "base"
-            task_frame.pose.orientation.w = 1.0
-
-            req.task_frame = task_frame
-            req.selection_vector_x, req.selection_vector_y, req.selection_vector_z, \
-            req.selection_vector_rx, req.selection_vector_ry, req.selection_vector_rz = selection_vector
-
-            req.wrench = Wrench()
-            req.wrench.force.x, req.wrench.force.y, req.wrench.force.z = wrench[0:3]
-            req.wrench.torque.x, req.wrench.torque.y, req.wrench.torque.z = wrench[3:6]
-
-            req.type = 2
-            req.speed_limits = Twist()
-            req.speed_limits.linear.x, req.speed_limits.linear.y, req.speed_limits.linear.z = vel_limits[0:3]
-            req.speed_limits.angular.x, req.speed_limits.angular.y, req.speed_limits.angular.z = vel_limits[3:6]
-            req.deviation_limits = pos_limits
-            req.damping_factor = damping
-            req.gain_scaling = gain
-
-            future = self.start_force_client.call_async(req)
-            rclpy.spin_until_future_complete(self.node, future)
-            result = future.result()
-            if not result or not result.success:
-                self.node.get_logger().error(f"Failed to start force mode: {getattr(result, 'message', '')}")
-                return False
-
-            self.node.get_logger().info("Force mode activated (async).")
-            # ish. idk whatever works
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                rclpy.spin_once(self.node, timeout_sec=0.005)
-                time.sleep(0.01)
-            self.stop_force_mode()
-
-        # Run in background
-        threading.Thread(target=_apply_force, daemon=True).start()
+        worker = threading.Thread(
+            target=self.send_cartesian_force,
+            args=(wrench, duration),
+            kwargs=dict(selection_vector=selection_vector, vel_limits=vel_limits,
+                        pos_limits=pos_limits, damping=damping, gain=gain),
+            daemon=True,
+        )
+        worker.start()
         return True
 
 
@@ -384,10 +362,11 @@ class MotionExecutor:
         gain=0.5
     ):
         """Apply a sequence of wrenches continuously without stopping force mode between steps."""
-        self.controller_manager.switch_to_controller(
+        if not self.controller_manager.switch_to_controller(
             [self.force_controller, self.passthrough_controller],
             [self.position_controller, self.velocity_controller]
-        )
+        ):
+            return False
 
         if not self.start_force_client.wait_for_service(timeout_sec=2.0):
             self.node.get_logger().error("Force mode start service not available.")
@@ -395,22 +374,18 @@ class MotionExecutor:
 
         self.node.get_logger().info(f"Starting continuous force trajectory with {len(wrench_traj)} steps")
 
-        # Apply the sequence
-        for wrench in wrench_traj:
-            if not rclpy.ok():
-                break
-
-            # Send the new wrench to the topic or service your force mode listens to
-            msg = Wrench()
-            msg.force.x, msg.force.y, msg.force.z = wrench[0:3]
-            msg.torque.x, msg.torque.y, msg.torque.z = wrench[3:6]
-            self.send_cartesian_force_step(wrench, dt, selection_vector=selection_vector,
-                                           vel_limits=vel_limits, pos_limits=pos_limits, damping=damping,
-                                           gain=gain)
-
-        # Stop force mode cleanly
-        self.stop_force_mode()
+        try:
+            for wrench in wrench_traj:
+                if not rclpy.ok():
+                    return False
+                if not self.send_cartesian_force_step(
+                        wrench, dt, selection_vector=selection_vector,
+                        vel_limits=vel_limits, pos_limits=pos_limits,
+                        damping=damping, gain=gain):
+                    return False
+        finally:
+            self.stop_force_mode()
         self.node.get_logger().info("Completed continuous force trajectory.")
         return True
-    
+
     #endregion

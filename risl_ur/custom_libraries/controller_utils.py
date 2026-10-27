@@ -67,8 +67,7 @@ class ControllerManager:
                 req = LoadController.Request()
                 req.name = ctrl
                 future = self.load_client.call_async(req)
-                rclpy.spin_until_future_complete(self, future)
-                res = future.result()
+                res = self._wait_future(future)
                 if not res or not res.ok:
                     self.node.get_logger().error(f"Failed to load {ctrl}")
                     continue

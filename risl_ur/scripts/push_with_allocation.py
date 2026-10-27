@@ -10,7 +10,8 @@ from scipy.spatial.transform import Rotation as R
 
 from risl_ur.custom_libraries.motion_utils import MotionExecutor
 from risl_ur.custom_libraries.pusher_utils import PusherHandler
-from risl_ur.custom_libraries.gripper_utils import GripperHandler, GRIPPER_TABLE
+from risl_ur.custom_libraries.gripper_utils import GripperHandler
+from risl_ur.custom_libraries.gripper_geometry import GRIPPER_TABLE
 from risl_ur.custom_libraries.actionlibraries import move, velocity, force, append_new_act, gripper_width
 
 class OverController(Node):
@@ -18,13 +19,13 @@ class OverController(Node):
         super().__init__('motion_planner')
 
         # Switch 1
-        # self.sticky = False                # Two friction modes: Sticky or Smooth
-        self.sticky = True                # Two friction modes: Sticky or Smooth
+        self.sticky = False                # Two friction modes: Sticky or Smooth
+        # self.sticky = True                # Two friction modes: Sticky or Smooth
 
         # Switch 2
         # self.target_name = "wrench"        # Options: jenga_6, wrench, allen_key
-        # self.target_name = "allen_key"        # Options: jenga_6, wrench, allen_key
-        self.target_name = "jenga_6"        # Options: jenga_6, wrench, allen_key
+        self.target_name = "allen_key"        # Options: jenga_6, wrench, allen_key
+        # self.target_name = "jenga_6"        # Options: jenga_6, wrench, allen_key
 
         # Switch 3
         # self.experiment_type = "single_wrench_repeated"   # "sequence", "single_wrench_repeated", or "custom_sequence"
@@ -530,7 +531,6 @@ class OverController(Node):
         elif act_type == "gripper":
             cmd = act["cmd"]
             self.gripper.publish(str(cmd))
-            self.gripper.previous_gripper_cmd = cmd
         
         self.executing = False  # All done
 

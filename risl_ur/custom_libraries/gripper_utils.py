@@ -6,18 +6,10 @@ from geometry_msgs.msg import PolygonStamped, Point32
 from risl_ur.custom_libraries.generallibraries import pose_text
 from risl_ur.custom_libraries.actionlibraries import move, gripper_width
 
-GRIPPER_TABLE = { # Known, measured values. Gripper width in 0.1mm.
-       0: 0.153,
-     200: 0.150,
-     400: 0.147,
-     600: 0.141,
-     800: 0.132,
-    1000: 0.114,
-}
-
-# Measured distance from gripper finger center to tip, normal to span
-# AKA gripper fingers are twice as long as this distance. 
-GRIPPER_FINGER_OFFSET = 0.010 # m
+# Re-export these names for existing users of gripper_utils.
+from risl_ur.custom_libraries.gripper_geometry import (
+    GRIPPER_TABLE, GRIPPER_FINGER_OFFSET, gripper_width_to_reach,
+)
 
 class GripperHandler:
     """Contains a live gripper width adjuster that widens the gripper as the ee gets close to the table. 
@@ -112,23 +104,7 @@ class GripperHandler:
     #     self.gripper_pub.publish(msg)
 
     def gripper_width_to_height(self, gripper_width):
-        # Clamp input to valid range
-        if gripper_width <= 0:
-            return GRIPPER_TABLE[0]
-        if gripper_width >= 1000:
-            return GRIPPER_TABLE[1000]
-
-        # Sort the keys to find where gripper_width fits
-        keys = sorted(GRIPPER_TABLE.keys())
-        for i in range(len(keys) - 1):
-            low = keys[i]
-            high = keys[i + 1]
-            if low <= gripper_width <= high:
-                # Linear interpolation
-                low_val = GRIPPER_TABLE[low]
-                high_val = GRIPPER_TABLE[high]
-                t = (gripper_width - low) / (high - low)
-                return low_val + t * (high_val - low_val)
+        return gripper_width_to_reach(gripper_width)
 
     def height_to_gripper_width(self, height):
         # Convert GRIPPER_TABLE to (height -> width) tuples for inverse lookup

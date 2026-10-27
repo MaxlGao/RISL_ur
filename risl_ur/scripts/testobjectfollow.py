@@ -31,7 +31,7 @@ class JTCClient(Node):
         
         # OBJECT TO FOLLOW
         # Options: jenga_###, allen_key, wrench
-        self.declare_parameter("target", "wrench")
+        self.declare_parameter("target", "jenga_6")
 
         controller_name = self.get_parameter("controller_name").value + "/follow_joint_trajectory"
         self.joints = self.get_parameter("joints").value
